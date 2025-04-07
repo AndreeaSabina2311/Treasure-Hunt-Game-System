@@ -20,14 +20,33 @@ typedef struct{
 struct stat st={0};
 struct stat file_stat;
 struct dirent *entry;
+struct dirent *hunt_entry;
 
 int main(int argc, char **argv)
 {
-  //fisier pentru logare actiuni
+  //<3, deoarece minim 3 argumente sunt mereu
+  if(argc<3)
+    {
+      perror("nu sunt suficiente argumente in linia de comanda");
+      exit(-1);
+    }
   
+  //fisier pentru logare actiuni
   char path[256];
   snprintf(path, sizeof(path), "./%s", argv[2]);  // folderul game1, etc.
 
+   if(strcmp(argv[1], "add") == 0)
+    {
+        if(stat(path, &st) == -1)
+        {
+            if(mkdir(path, 0700) == -1)
+            {
+                perror("eroare creare director");
+                exit(-1);
+            }
+        }
+    }
+   
   char log_file[300];
   snprintf(log_file, sizeof(log_file), "%s/logged_hunt.txt", path);
   int log_fd=open(log_file, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
@@ -37,6 +56,48 @@ int main(int argc, char **argv)
       exit(-1);
     }
 	
+  ///creare legaturi simbolice/shorcut pentru log
+  char symlink_path[256];
+  snprintf(symlink_path,sizeof(symlink_path),"logged_hunt-%s",argv[2]);
+
+  //verificam daca link-ul simbolic deja exista, daca nu, il creem
+  if(lstat(symlink_path,&st)==-1)
+    {
+      if(symlink(log_file,symlink_path)==-1)
+	{
+	  perror("Eroare la creare link simbolic\n");
+	  exit(-1);
+	}
+    }
+
+  char log_entry_symlink[512];
+
+  if(strcmp(argv[1],"add")==0)
+    {
+      snprintf(log_entry_symlink,sizeof(log_entry_symlink),"S-a adaugat comoara in vanatoarea %s\n",argv[2]);
+    }
+  else if(strcmp(argv[1],"list")==0)
+    {
+      snprintf(log_entry_symlink, sizeof(log_entry_symlink),"S-au listat toate comorile pentru jocul %s\n", argv[2]);
+    }
+  else if (strcmp(argv[1], "view") == 0)
+    {
+      snprintf(log_entry_symlink, sizeof(log_entry_symlink),"S-a vizualizat comoara %s în jocul %s\n", argv[3], argv[2]);
+    }
+  else if (strcmp(argv[1], "remove_treasure") == 0 )
+    {
+      snprintf(log_entry_symlink, sizeof(log_entry_symlink),"S-a șters comoara %s din jocul %s\n", argv[3], argv[2]);
+    }
+  else if (strcmp(argv[1], "remove_hunt") == 0)
+    {
+      snprintf(log_entry_symlink, sizeof(log_entry_symlink),"S-a șters jocul %s\n", argv[2]);
+    }
+  else
+    {
+      snprintf(log_entry_symlink, sizeof(log_entry_symlink),"Comandă necunoscută");
+    }
+
+  write(log_fd,log_entry_symlink,strlen(log_entry_symlink));
   //al doilea argument din linia de comanda este ADD
   //adauga o noua comoara la directorul hunt specificat ca al doilea argument in linie de comanda
   if(strcmp(argv[1],"add")==0)
@@ -53,6 +114,10 @@ int main(int argc, char **argv)
 		exit(-1);
 	      }
 	  }
+
+
+
+
 	//cer numele fisierului de la utilizator
 	char filename[100];
 	printf("Introdu numele fisierului (ex: treasure_1.dat): ");
@@ -279,6 +344,7 @@ int main(int argc, char **argv)
 	}
       int id_arg=atoi(argv[3]);
       int continua=1; //continui sa parcurg directorul vanatorii pana cand am gasit comoara; dupa ce am gasit-o, m-am oprit
+      char removed_file[512];
       while((entry=readdir(dir))!=NULL && continua==1)
 	{
 	  if(strstr(entry->d_name,".dat")!=NULL)
@@ -312,6 +378,8 @@ int main(int argc, char **argv)
 		  if(x.treasure_id==id_arg)
 		    {
 		      continua=0;
+		      strncpy(removed_file, entry->d_name, sizeof(removed_file));
+		      removed_file[sizeof(removed_file) - 1] = '\0'; // Siguranță
 		      continue; //nu copiem comoara pe care vrem sa o stergem
 		    }
 		  write(temp_f, &x, sizeof(Treasure));
@@ -363,12 +431,67 @@ int main(int argc, char **argv)
 	}
       else
 	{
-	  printf("Comoara a fost stearsa din fisierul %s.\n",  entry->d_name);
+	  printf("Comoara a fost stearsa din fisierul %s.\n",  removed_file);
 	}
     }
   //remove_hunt <hunt_id>
   //pasi:verific daca exista (daca nu exista ma opresc cu un perror si un exit); sterg directorul cu tot ce mai contine folosind rm -r nume_director
   //sa intrebi la lab ce faci cu logged_hunt daca tu stergi directorul in care se afla si logged_hunt!!!
   //eu cred ca nu vei mai avea nevoie de fisierul text cu toate operatiile si deci se va sterge si el cu restul fisierelor din director si doar afisezi pe ecran ca s-a sters directorul
+  else if(strcmp(argv[1],"remove_hunt")==0)
+    {
+      DIR *dir;
+      char path[256];
+      snprintf(path, sizeof(path),"./%s",argv[2]);
+      
+      if(stat(argv[2],&st)==-1) //testez daca exista, iar daca nu exista directorul,dau mesaj si ma opresc
+	{
+	  printf("NU exista vanatoarea %s\n",argv[2]);
+	}
+      else //daca exista directorul, ma plimb prin el si sterg fiecare fisier fara cel de log.txt
+	{
+	  dir=opendir(path);
+	  if(dir==NULL)
+	    {
+	      perror("eroare la deschiderea directorului");
+	      exit(-1);
+	    }
+	  while((entry=readdir(dir))!=NULL)
+	    {
+	      if(strstr(entry->d_name,".dat")!=NULL)
+		{
+		  char filepath[512];
+		  snprintf(filepath,sizeof(filepath),"%s/%s",path,entry->d_name);
+		  if(remove(filepath)==-1)
+		    {
+		      perror("eroare stergere fisier .dat");
+		      exit(-1);
+		    }
+		}
+	      
+	    }
+	  closedir(dir);
+	  printf("Vanatoarea %s a fost stearsa\n",argv[2]);
+	  //logam actiunea
+	  char log_entry[512];
+	  int len=snprintf(log_entry, sizeof(log_entry),"Hunt %s was removed\n",argv[2]);
+	  if(write(log_fd, log_entry, len) ==-1)
+	    {
+	      perror("eroare la scriere in log");
+	      close(log_fd);
+	      exit(-1);
+	    }
+	  if(close(log_fd)==-1)
+	    {
+	      perror("eroare inchidere fisier de log");
+	      exit(-1);
+	    } 
+	}	
+    }
+  else
+    {
+      perror("A fost introdusa o comanda necunoscuta");
+      exit(-1);
+    }
   return 0;
-}
+} 
