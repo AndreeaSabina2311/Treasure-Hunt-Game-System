@@ -31,13 +31,14 @@ int main(int argc, char **argv)
       exit(-1);
     }
   
-  //fisier pentru logare actiuni
+  //creare cale (path) pentru directorul de vanatoare
   char path[256];
   snprintf(path, sizeof(path), "./%s", argv[2]);  // folderul game1, etc.
+  //snprintf(destinatie, dimensiune_maxima, "format", argumente...); -> creeaza un sir de caractere formatat
 
    if(strcmp(argv[1], "add") == 0)
     {
-        if(stat(path, &st) == -1)
+      if(stat(path, &st) == -1) //daca nu exista directorul, il creeaza
         {
             if(mkdir(path, 0700) == -1)
             {
@@ -46,7 +47,7 @@ int main(int argc, char **argv)
             }
         }
     }
-   
+   //fisier pentru logare actiuni
   char log_file[300];
   snprintf(log_file, sizeof(log_file), "%s/logged_hunt.txt", path);
   int log_fd=open(log_file, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
@@ -70,6 +71,7 @@ int main(int argc, char **argv)
 	}
     }
 
+  /*
   char log_entry_symlink[512];
 
   if(strcmp(argv[1],"add")==0)
@@ -98,6 +100,7 @@ int main(int argc, char **argv)
     }
 
   write(log_fd,log_entry_symlink,strlen(log_entry_symlink));
+  */
   //al doilea argument din linia de comanda este ADD
   //adauga o noua comoara la directorul hunt specificat ca al doilea argument in linie de comanda
   if(strcmp(argv[1],"add")==0)
@@ -378,8 +381,8 @@ int main(int argc, char **argv)
 		  if(x.treasure_id==id_arg)
 		    {
 		      continua=0;
-		      strncpy(removed_file, entry->d_name, sizeof(removed_file));
-		      removed_file[sizeof(removed_file) - 1] = '\0'; // Siguranță
+		      strncpy(removed_file, entry->d_name, sizeof(removed_file)); //copiaza numele fisierului in care s-a gasit comoara dupa id in sirul de caractere removed_file, ca sa pot sa afisez mai tarziu din ce fisier am sters
+		      removed_file[sizeof(removed_file) - 1] = '\0'; // asigura ca sirul se termina cu indicator de final de sir de caractere
 		      continue; //nu copiem comoara pe care vrem sa o stergem
 		    }
 		  write(temp_f, &x, sizeof(Treasure));
@@ -458,7 +461,7 @@ int main(int argc, char **argv)
 	    }
 	  while((entry=readdir(dir))!=NULL)
 	    {
-	      if(strstr(entry->d_name,".dat")!=NULL)
+	      if(strstr(entry->d_name,".dat")!=NULL || strstr(entry->d_name,".txt")!=NULL)
 		{
 		  char filepath[512];
 		  snprintf(filepath,sizeof(filepath),"%s/%s",path,entry->d_name);
@@ -468,10 +471,11 @@ int main(int argc, char **argv)
 		      exit(-1);
 		    }
 		}
-	      
+		
 	    }
 	  closedir(dir);
 	  printf("Vanatoarea %s a fost stearsa\n",argv[2]);
+	  unlink(symlink_path);
 	  //logam actiunea
 	  char log_entry[512];
 	  int len=snprintf(log_entry, sizeof(log_entry),"Hunt %s was removed\n",argv[2]);
