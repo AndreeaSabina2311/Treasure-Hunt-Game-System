@@ -2,28 +2,130 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/stat.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <string.h>
 #include <signal.h>
-#include <dirent.h>
-
-typedef struct{
-  int treasure_id;
-  char name[30];
-  float latitude;
-  float longitude;
-  char clue[100];
-  int value;
-}Treasure;
 
 pid_t monitor_pid = -1;
 int monitor_activ = 0;
+int monitor_terminating = 0;
 
-#define BASE_PATH "/home/debian/SO/proiect/" //asta este path-ul meu, unde se afla toate lucrurile legate de proiect
+struct sigaction sa;
 
-struct dirent *entry; //pentru deschidere director
-struct dirent *file_entry; //pentru deschidere subdirectoare
+//functii pentru semnale
+void handle_signal(int sig)
+{
+  // folosit doar de monitor
+    if (sig == SIGUSR1) {
+        int fd = open("monitor_cmd.txt", O_RDONLY);
+        if (fd<0) {
+            perror("Monitor: nu pot deschide fișierul de comenzi");
+            return;
+        }
+
+       char cmd[256];
+        int n = read(fd, cmd, sizeof(cmd) - 1);
+        if (n < 0) {
+            perror("Monitor: eroare la citirea comenzii din fișier");
+            close(fd);
+            return;
+        }
+        cmd[n] = '\0';
+
+        // Elimină newline dacă există
+        char *newline = strchr(cmd, '\n');
+        if (newline) *newline = '\0';
+
+        close(fd);
+
+        if (strcmp(cmd, "list_hunts") == 0) {
+	  pid_t child = fork();
+	  if (child == 0) {
+	    execl("./treasure_manager", "./treasure_manager", "--list_hunts", NULL);
+	    perror("Monitor: exec eșuat pentru list_hunts");
+	    exit(1);
+	  } else if (child > 0) {
+	    waitpid(child, NULL, 0);
+	  } else {
+	    perror("Monitor: fork eșuat");
+	  }
+        } else if (strncmp(cmd, "--list_treasures ", 17) == 0) {
+            char *hunt_id = cmd + 17;
+	    while( *hunt_id==' ') hunt_id++;
+	    if(*hunt_id=='\0')
+	      {
+		printf("Monitor: lipseste id-ul vanatorului pentru list_treasures\n");
+	      }
+	    else{
+	      pid_t child = fork();
+	      if (child == 0) {
+		execl("./treasure_manager", "./treasure_manager", "--list_treasures", hunt_id, NULL);
+		perror("Monitor: exec eșuat pentru list_treasures");
+		exit(1);
+	      } else if (child > 0) {
+		waitpid(child, NULL, 0);
+	      } else {
+		perror("Monitor: fork eșuat");
+	      }
+	    }
+        } else if (strncmp(cmd, "--view_treasure ", 16) == 0) {
+	  char *args = cmd + 16;
+	  char args_copy[256];
+	    strncpy(args_copy, args, sizeof(args_copy)-1);
+	    args_copy[sizeof(args_copy)-1]='\0';
+	    
+            char *hunt = strtok(args_copy, " ");
+            char *treasure_id = strtok(NULL, " ");
+
+            if (hunt && treasure_id) {
+	      pid_t child = fork();
+	      if (child == 0) {
+		execl("./treasure_manager", "./treasure_manager", "--view_treasure", hunt, treasure_id, NULL);
+		perror("Monitor: exec eșuat pentru view_treasure");
+		exit(1);
+	      } else if (child > 0) {
+		waitpid(child, NULL, 0);
+	      } else {
+		perror("Monitor: fork eșuat");
+	      }
+            } else {
+	      perror("Monitor: argumente invalide pentru view_treasure");
+            }
+        } else {
+            perror("Monitor: comandă necunoscută");
+        }
+    } else if (sig == SIGTERM) {
+      printf("Monitorul se închide...\n");
+      usleep(1000000);
+    }
+}
+
+
+void setup_signal_handlers()
+{
+  sa.sa_handler=handle_signal;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags=0;
+
+  sigaction(SIGUSR1, &sa, NULL);
+  sigaction(SIGUSR2, &sa, NULL);
+}
+
+//functii pentru procesul monitor
+
+void monitor_loop()
+{
+  setup_signal_handlers();//activeaza functiile care trateaza semnalele
+  printf("Monitorul a pornit (PID: %d) și așteaptă comenzi prin semnale...\n", getpid());
+
+  while(1)
+    {
+      pause(); //procesul asteapta pasiv sa primeasca un semnal
+    }
+  printf("Monitorul iese acum\n");
+  exit(0);
+}
 
 void start_monitor()
 {
@@ -41,223 +143,109 @@ void start_monitor()
     }
   if(monitor_pid == 0)
     {
-      execl("./treasure_monitor","./treasure_monitor",NULL);
-      perror("execl a esuat");
-      exit(1);
+      monitor_loop();
+      exit(0);
     }
   monitor_activ=1;
+  monitor_terminating=0;
   printf("Procesul monitor a inceput cu PID %d\n", monitor_pid);
 }
 
-void list_hunts()
+void stop_monitor()
 {
-    DIR *dir;
-
-    dir = opendir(BASE_PATH);
-    if (dir == NULL)
-    {
-        perror("Eroare la deschiderea directorului principal");
+  if (!monitor_activ) {
+        printf("Monitorul nu este activ.\n");
         return;
     }
 
-    printf("Lista vanatorilor:\n");
+    kill(monitor_pid, SIGTERM);
+    monitor_activ = 0;
+    monitor_terminating = 1;
 
-    while ((entry = readdir(dir)) != NULL)
-    {
-        if (entry->d_type == DT_DIR)
-        {
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-            {
-                continue;
-            }
+    // așteptăm să se termine
+    int status;
+    waitpid(monitor_pid, &status, 0);
 
-            char subdir_path[1024];
-            int len_sub = snprintf(subdir_path, sizeof(subdir_path), "%s/%s", BASE_PATH, entry->d_name);
-            if (len_sub < 0 || len_sub >= sizeof(subdir_path))
-            {
-                fprintf(stderr, "Calea subdirectorului este prea lunga: %s/%s\n", BASE_PATH, entry->d_name);
-                continue;
-            }
-
-            int treasure_count = 0;
-
-            DIR *subdir = opendir(subdir_path);
-            if (subdir == NULL)
-            {
-                perror("Eroare la deschiderea subdirectorului");
-                continue;
-            }
-
-            while ((file_entry = readdir(subdir)) != NULL)
-            {
-                if (file_entry->d_type == DT_REG && strstr(file_entry->d_name, ".dat"))
-                {
-                    char file_path[1024];
-                    int len_file = snprintf(file_path, sizeof(file_path), "%s/%s", subdir_path, file_entry->d_name);
-                    if (len_file < 0 || len_file >= sizeof(file_path))
-                    {
-                        fprintf(stderr, "Calea spre fisierul este prea lunga: %s/%s\n", subdir_path, file_entry->d_name);
-                        continue;
-                    }
-
-                    int f = open(file_path, O_RDONLY);
-                    if (f == -1)
-                    {
-                        perror("Eroare deschidere fisier de citire");
-                        continue;
-                    }
-
-                    Treasure x;
-                    while (read(f, &x, sizeof(Treasure)) == sizeof(Treasure))
-                    {
-                        treasure_count++;
-                    }
-                    close(f);
-                }
-            }
-
-            printf(" -%s: %d comori\n", entry->d_name, treasure_count);
-            closedir(subdir);
-        }
+    if (WIFEXITED(status)) {
+        printf("Monitorul s-a închis cu codul %d.\n", WEXITSTATUS(status));
+    } else {
+        printf("Monitorul s-a închis necontrolat.\n");
     }
 
-    closedir(dir);
+    monitor_pid = -1;
+    monitor_terminating = 0;
 }
 
-//list_treasures: afiseaza toate comorile dintr-o vanatoare
-//banuiesc ca vanatoarea o primim ca argument
-
-void list_treasures(char *hunt)
-{
-  DIR *dir;
-  char path[1024];
-  snprintf(path, sizeof(path),"%s/%s",BASE_PATH,hunt);
-
-  dir=opendir(path);
-  if(dir==NULL)
-    {
-      perror("Eroare la deschiderea directorului");
-      exit(-1);
+void send_command_to_monitor(const char *cmd) {
+    if (!monitor_activ) {
+        perror("Eroare: Monitorul nu este activ. Porniți-l cu --start_monitor");
+        return;
     }
 
-  printf("Vanatoarea: %s\n", hunt);
-
-  while((entry=readdir(dir))!=NULL)
-    {
-      if(strstr(entry->d_name,".dat")!=NULL)
-	{
-	  char filepath[1024];
-	  int len = snprintf(filepath, sizeof(filepath), "%s/%s",path, entry->d_name);
-	  if(len<0 || len>=sizeof(filepath))
-	    {
-	      fprintf(stderr, "Calea spre fisierul este prea lunga: %s/%s\n", path, entry->d_name);
-                continue;
-	    }
-
-	  int f=open(filepath, O_RDONLY);
-	  if(f==-1)
-	    {
-	      perror("Eroare deschidere fisier .dat");
-	      continue;
-	    }
-	  Treasure x;
-	  printf("\nDin fisierul: %s\n", entry->d_name);
-	  while(read(f,&x,sizeof(Treasure)) == sizeof(Treasure))
-	    {
-	      printf("ID: %d\n", x.treasure_id);
-	      printf("Username: %s\n", x.name);
-	      printf("Latitude: %f\n", x.latitude);
-	      printf("Longitude: %f\n", x.longitude);
-	      printf("Clue: %s\n", x.clue);
-	      printf("Value: %d\n", x.value);
-	    }
-	  close(f);
-	}
+    int fd = open("monitor_cmd.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        perror("Eroare la deschiderea fișierului de comandă");
+        return;
     }
-  closedir(dir);
+
+    if (write(fd, cmd, strlen(cmd)) < 0 || write(fd, "\n", 1) < 0) {
+        perror("Eroare la scrierea în fișierul de comandă");
+        close(fd);
+        return;
+    }
+    close(fd);
+
+    kill(monitor_pid, SIGUSR1);
+    usleep(100000);
 }
-
-
-//view_treasure: tells the monitor to show the information about a treasure in hunt
-//primesc ca argument id-ul cautat; parcurg fiecare vanatoare(subdirector), iar in fiecare vanatoare parcurg fiecare fisier .dat in care caut id-ul si afisez apoi datele despre comoara cu id-ul dat
-void view_treasure(int id)
-{
-    DIR *dir;
-    dir = opendir(BASE_PATH);
-    if (dir == NULL) {
-        perror("Eroare la deschiderea directorului principal");
-        exit(-1);
-    }
-
-    int gasit = 0;
-
-    while ((entry = readdir(dir)) != NULL && gasit == 0) {
-        if (entry->d_type == DT_DIR) {
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-                continue;
-
-            char subdir_path[1024];
-            int len_subdir = snprintf(subdir_path, sizeof(subdir_path), "%s/%s", BASE_PATH, entry->d_name);
-            if (len_subdir < 0 || len_subdir >= sizeof(subdir_path)) {
-                fprintf(stderr, "Calea spre subdirector este prea lunga: %s/%s\n", BASE_PATH, entry->d_name);
-                continue;
-            }
-
-            DIR *subdir = opendir(subdir_path);
-            if (subdir == NULL) {
-                perror("Eroare la deschiderea subdirectorului");
-                continue;
-            }
-
-            while ((file_entry = readdir(subdir)) != NULL && gasit == 0) {
-                if (file_entry->d_type == DT_REG && strstr(file_entry->d_name, ".dat")) {
-                    char file_path[1024];
-                    int len_file = snprintf(file_path, sizeof(file_path), "%s/%s", subdir_path, file_entry->d_name);
-                    if (len_file < 0 || len_file >= sizeof(file_path)) {
-                        fprintf(stderr, "Calea spre fisierul este prea lunga: %s/%s\n", subdir_path, file_entry->d_name);
-                        continue;
-                    }
-
-                    int f = open(file_path, O_RDONLY);
-                    if (f == -1) {
-                        perror("Eroare la deschiderea fisierului");
-                        continue;
-                    }
-
-                    Treasure x;
-                    while (read(f, &x, sizeof(Treasure)) == sizeof(Treasure)) {
-                        if (x.treasure_id == id) {
-                            printf("Comoara gasita in vanatoarea: %s (fisier: %s)\n", entry->d_name, file_entry->d_name);
-                            printf("ID: %d\n", x.treasure_id);
-                            printf("Username: %s\n", x.name);
-                            printf("Latitude: %f\n", x.latitude);
-                            printf("Longitude: %f\n", x.longitude);
-                            printf("Clue: %s\n", x.clue);
-                            printf("Value: %d\n", x.value);
-                            gasit = 1;
-                            break;
-                        }
-                    }
-
-                    close(f);
-                }
-            }
-
-            closedir(subdir);
-        }
-    }
-
-    closedir(dir);
-
-    if (!gasit) {
-        printf("Nu s-a gasit comoara cu ID-ul %d in nicio vanatoare.\n", id);
-    }
-}
-
-
 
 int main()
 {
-  
+
+  char command[256];
+
+
+  while(1)
+    {
+      printf("> ");
+      int len = read(STDIN_FILENO, command, sizeof(command) - 1);
+      if (len <= 0) {
+	perror("Eroare citire comanda");
+	exit(1);
+      }
+      command[len]='\0';
+      char *newline = strchr(command, '\n');
+      if (newline) *newline = '\0';
+      if (monitor_terminating) {
+	printf("Monitorul este în curs de oprire. Așteptați finalizarea.\n");
+	continue;
+      }
+
+      if (strcmp(command, "--start_monitor") == 0) {
+	start_monitor();
+        }
+        else if (strcmp(command, "--stop_monitor") == 0) {
+            stop_monitor();
+        }
+        else if (strcmp(command, "--list_hunts") == 0) {
+            send_command_to_monitor("list_hunts");
+        }
+        else if (strncmp(command, "--list_treasures ", 17) == 0) {
+            send_command_to_monitor(command);
+        }
+        else if (strncmp(command, "--view_treasure ", 16) == 0) {
+            send_command_to_monitor(command);
+        }
+        else if (strcmp(command, "--exit") == 0) {
+            if (monitor_activ) {
+                perror("Eroare: Monitorul este încă activ. Opriți-l cu --stop_monitor înainte de a ieși.\n");
+                continue;
+            }
+            break;
+        }
+        else {
+            printf("Comandă necunoscută: %s\n", command);
+        }
+    }
   return 0;
 }
